@@ -1,3 +1,4 @@
+from streamlit_autorefresh import st_autorefresh
 from __future__ import annotations
 import streamlit as st
 import time
@@ -99,3 +100,4 @@ if time.time() < st.session_state["popup_until"]:
         is_win=st.session_state["popup_is_win"],
         extra_text="방금 종료된 경기 결과"
     )
+
