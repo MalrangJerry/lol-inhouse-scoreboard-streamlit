@@ -2,65 +2,93 @@ from __future__ import annotations
 import streamlit as st
 from typing import List, Dict, Any
 
-OVERLAY_CSS = """
+BASE_CSS = """
 <style>
-/* 전체 여백 제거 + 370x240 박스 */
 .block-container { padding: 0 !important; }
 header, footer { visibility: hidden; height: 0px; }
 [data-testid="stSidebar"] { display: none; }
 html, body { background: transparent !important; }
-#overlay {
+
+.wrap { position: relative; width: 370px; height: 240px; }
+
+.card {
   width: 370px; height: 240px;
-  padding: 10px 12px;
   box-sizing: border-box;
-  background: rgba(10,10,10,0.65);
+  padding: 10px 12px;
+  background: rgba(10,10,10,0.70);
   border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 12px;
+  border-radius: 14px;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
   color: rgba(255,255,255,0.92);
 }
-.row { display: flex; justify-content: space-between; align-items: center; }
-.title { font-size: 14px; font-weight: 700; letter-spacing: 0.2px; }
-.score { font-size: 18px; font-weight: 800; }
-.sub { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+
+.row { display:flex; justify-content:space-between; align-items:center; }
 .hr { height: 1px; background: rgba(255,255,255,0.10); margin: 8px 0; }
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.team { padding: 8px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; }
-.teamName { font-size: 12px; font-weight: 700; opacity: 0.95; margin-bottom: 6px; }
-.p { display: flex; justify-content: space-between; font-size: 11px; line-height: 1.45; opacity: 0.9; }
+
+.title { font-size: 12px; font-weight: 800; opacity: .95; }
+.sub { font-size: 10px; opacity: .75; }
+
+.grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.teamBox { padding: 8px; border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; }
+.teamName { font-size: 11px; font-weight: 900; margin-bottom: 6px; }
+.p { display:flex; justify-content:space-between; font-size: 10px; line-height: 1.5; opacity: .92; }
+.small { font-size: 10px; opacity: .7; }
+
+.scoreBig {
+  height: 160px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-direction:column;
+  gap: 6px;
+}
+.scoreLabel { font-size: 14px; font-weight: 900; letter-spacing: .5px; opacity: .95; }
+.scoreNums { font-size: 44px; font-weight: 1000; line-height: 1; }
+.vs { font-size: 10px; opacity: .6; margin: 2px 0; }
+.teamLine { font-size: 11px; opacity: .85; }
+
 .badge {
-  font-size: 10px; font-weight: 800;
+  font-size: 10px; font-weight: 900;
   padding: 4px 8px; border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.14);
-  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.06);
 }
-.flash {
+
+/* 팝업(세 번째 이미지 느낌) */
+.popup {
   position: absolute;
-  width: 370px;
   left: 0; top: 0;
-  padding: 10px 12px;
-  box-sizing: border-box;
-}
-.flashBox {
-  background: rgba(0,0,0,0.75);
+  width: 370px; height: 240px;
+  border-radius: 14px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-direction:column;
+  gap: 10px;
+  text-align:center;
+  z-index: 10;
   border: 1px solid rgba(255,255,255,0.18);
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 14px;
-  font-weight: 800;
-  display: inline-block;
 }
-.win { color: rgba(120,255,160,0.95); }
-.loss { color: rgba(255,120,120,0.95); }
-.containerWrap { position: relative; width: 370px; height: 240px; }
+.popup.win {
+  background: linear-gradient(180deg, rgba(45, 185, 120, .92), rgba(20, 120, 80, .92));
+}
+.popup.loss {
+  background: linear-gradient(180deg, rgba(255, 92, 92, .92), rgba(180, 45, 45, .92));
+}
+.popupTitle { font-size: 30px; font-weight: 1000; letter-spacing: 1px; }
+.popupName { font-size: 18px; font-weight: 900; opacity: .95; }
+.popupSub { font-size: 11px; opacity: .9; padding: 6px 10px; border-radius: 999px; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.22); }
 </style>
 """
 
-def render_overlay(session: Dict[str, Any], participants: List[Dict[str, Any]], flash_text: str | None = None, flash_is_win: bool | None = None):
-    st.markdown(OVERLAY_CSS, unsafe_allow_html=True)
-
+def _split_teams(participants: List[Dict[str, Any]]):
     a = [p for p in participants if p["team"] == "A"]
     b = [p for p in participants if p["team"] == "B"]
+    return a, b
+
+def render_view_roster(session: Dict[str, Any], participants: List[Dict[str, Any]]):
+    st.markdown(BASE_CSS, unsafe_allow_html=True)
+    a, b = _split_teams(participants)
 
     def team_block(team_name: str, plist: List[Dict[str, Any]]):
         lines = ""
@@ -68,43 +96,28 @@ def render_overlay(session: Dict[str, Any], participants: List[Dict[str, Any]], 
             lines += f"""
             <div class="p">
               <span>{p['real_name']}</span>
-              <span>{p['wins']}W {p['losses']}L</span>
+              <span>{p['wins']}승 {p['losses']}패</span>
             </div>
             """
         return f"""
-        <div class="team">
+        <div class="teamBox">
           <div class="teamName">{team_name}</div>
           {lines}
         </div>
         """
 
-    flash_html = ""
-    if flash_text:
-        cls = "win" if flash_is_win else "loss"
-        flash_html = f"""
-        <div class="flash">
-          <div class="flashBox {cls}">{flash_text}</div>
-        </div>
-        """
-
     html = f"""
-    <div class="containerWrap">
-      {flash_html}
-      <div id="overlay">
+    <div class="wrap">
+      <div class="card">
         <div class="row">
           <div>
             <div class="title">{session['name']}</div>
-            <div class="sub">Solo Ranked (420) · 세션 시작 이후 집계</div>
+            <div class="sub">팀별 개인 전적</div>
           </div>
           <div class="badge">LIVE</div>
         </div>
         <div class="hr"></div>
-        <div class="row">
-          <div class="score">{session['team_a_wins']} : {session['team_b_wins']}</div>
-          <div class="sub">{session['team_a_name']} vs {session['team_b_name']}</div>
-        </div>
-        <div class="hr"></div>
-        <div class="grid">
+        <div class="grid2">
           {team_block(session['team_a_name'], a)}
           {team_block(session['team_b_name'], b)}
         </div>
@@ -112,3 +125,37 @@ def render_overlay(session: Dict[str, Any], participants: List[Dict[str, Any]], 
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
+
+def render_view_score(session: Dict[str, Any]):
+    st.markdown(BASE_CSS, unsafe_allow_html=True)
+    html = f"""
+    <div class="wrap">
+      <div class="card">
+        <div class="row">
+          <div class="title">TOTAL SCORE</div>
+          <div class="badge">LIVE</div>
+        </div>
+        <div class="hr"></div>
+        <div class="scoreBig">
+          <div class="scoreNums">{session['team_a_wins']} <span class="vs">VS</span> {session['team_b_wins']}</div>
+          <div class="teamLine">{session['team_a_name']}  vs  {session['team_b_name']}</div>
+          <div class="small">Solo Ranked (420) · 세션 시작 이후 집계</div>
+        </div>
+      </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+def render_popup_result(real_name: str, is_win: bool, extra_text: str = "방금 종료된 경기 결과"):
+    cls = "win" if is_win else "loss"
+    title = "승리" if is_win else "패배"
+    st.markdown(
+        f"""
+        <div class="popup {cls}">
+          <div class="popupTitle">{title}</div>
+          <div class="popupName">{real_name}</div>
+          <div class="popupSub">{extra_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
