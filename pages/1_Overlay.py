@@ -1,93 +1,101 @@
 from __future__ import annotations
 import streamlit as st
-from datetime import datetime, timezone
+import time
+from datetime import datetime
 from dateutil import parser as dtparser
 
 from app.db import supabase_admin
 from app.logic import load_session, load_participants, tick_session
-from app.ui import render_overlay
-
-def _dt(s: str) -> datetime:
-    return dtparser.isoparse(s)
+from app.ui import render_view_roster, render_view_score, render_popup_result
 
 st.set_page_config(page_title="Overlay", layout="centered")
 
-# query param: ?session=uuid
 session_id = st.query_params.get("session", "")
 if not session_id:
     st.error("session 파라미터가 필요합니다. 예: /Overlay?session=xxxx-uuid")
     st.stop()
 
-# 오버레이용: 상단 여백 최소화
-st.markdown(
-    """
-    <style>
-    .block-container { padding-top: 0.2rem; padding-bottom: 0rem; }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# ====== 설정 ======
+ROTATE_SECONDS = 8       # 화면 A/B 전환 주기
+POPUP_SECONDS = 4.0      # 승/패 팝업 유지 시간(3~5초 중 4초)
+AUTO_TICK = True         # 오버레이가 켜져 있을 때 자동 집계(간단 운영용)
+TICK_EVERY = 30          # tick 호출 주기(초)
 
-# ---- 상태: 마지막 본 이벤트 시각(뷰어별)
+# ====== 상태 ======
 if "last_event_at" not in st.session_state:
     st.session_state["last_event_at"] = None  # datetime
-if "flash_until" not in st.session_state:
-    st.session_state["flash_until"] = 0.0
-if "flash_text" not in st.session_state:
-    st.session_state["flash_text"] = None
-if "flash_is_win" not in st.session_state:
-    st.session_state["flash_is_win"] = None
+if "popup_until" not in st.session_state:
+    st.session_state["popup_until"] = 0.0
+if "popup_name" not in st.session_state:
+    st.session_state["popup_name"] = ""
+if "popup_is_win" not in st.session_state:
+    st.session_state["popup_is_win"] = False
+if "last_tick_at" not in st.session_state:
+    st.session_state["last_tick_at"] = 0.0
 
-# ---- Tick: Streamlit에서 서버 스케줄러가 없으니, 오버레이 페이지에서 주기적으로 tick 실행 가능(옵션)
-# 운영 정책: 오버레이를 항상 켜둘 거면 이게 가장 간단함
-AUTO_TICK = True
-
-# ---- 오버레이 이벤트 표시 중이면 1초 리프레시, 아니면 30초
-import time
 now = time.time()
-refresh_ms = 1000 if now < st.session_state["flash_until"] else 30000
-st.experimental_set_query_params(session=session_id)
+
+# ====== 리프레시 주기: 팝업 중이면 빠르게, 아니면 느리게 ======
+refresh_ms = 500 if now < st.session_state["popup_until"] else 2000
 st.autorefresh(interval=refresh_ms, key="overlay_refresh")
 
-# ---- (옵션) tick 실행
-if AUTO_TICK and refresh_ms == 30000:
-    # 평소 30초 주기 때만 tick
-    try:
-        tick_session(session_id)
-    except Exception:
-        # 오버레이는 죽지 않게(방송 중)
-        pass
+# ====== (옵션) 자동 Tick ======
+if AUTO_TICK:
+    if now - st.session_state["last_tick_at"] >= TICK_EVERY:
+        st.session_state["last_tick_at"] = now
+        try:
+            tick_session(session_id)
+        except Exception:
+            # 방송 중 화면이 죽지 않게 조용히 무시(원하면 로그 출력 가능)
+            pass
 
 sb = supabase_admin()
 
-# ---- 데이터 로드
+# ====== 데이터 로드 ======
 session = load_session(session_id)
 participants = load_participants(session_id)
 
-# ---- 새 이벤트 감지 (최신 20개만)
-ev = sb.table("events").select("*").eq("session_id", session_id).order("created_at", desc=True).limit(20).execute()
+# ====== 새 이벤트 감지 (events 테이블에서 created_at 기준) ======
+ev = (
+    sb.table("events")
+    .select("*")
+    .eq("session_id", session_id)
+    .order("created_at", desc=True)
+    .limit(20)
+    .execute()
+)
 events = ev.data or []
 
 last_seen = st.session_state["last_event_at"]
-newest_event = None
-for e in reversed(events):  # 오래된->최신 순으로 검사
-    t = _dt(e["created_at"])
+newest = None
+
+# 오래된 -> 최신 순으로 돌며 last_seen 이후 첫 이벤트 찾기
+for e in reversed(events):
+    t = dtparser.isoparse(e["created_at"])
     if last_seen is None or t > last_seen:
-        newest_event = e
+        newest = e
 
-if newest_event:
-    t = _dt(newest_event["created_at"])
+if newest:
+    t = dtparser.isoparse(newest["created_at"])
     st.session_state["last_event_at"] = t
-    # 4초 표시
-    st.session_state["flash_until"] = time.time() + 4.0
-    is_win = newest_event["result"] == "WIN"
-    st.session_state["flash_is_win"] = is_win
-    st.session_state["flash_text"] = f"{newest_event['real_name']} {'승리' if is_win else '패배'}"
 
-flash_text = None
-flash_is_win = None
-if time.time() < st.session_state["flash_until"]:
-    flash_text = st.session_state["flash_text"]
-    flash_is_win = st.session_state["flash_is_win"]
+    is_win = newest["result"] == "WIN"
+    st.session_state["popup_is_win"] = is_win
+    st.session_state["popup_name"] = newest["real_name"]
+    st.session_state["popup_until"] = time.time() + POPUP_SECONDS
 
-render_overlay(session, participants, flash_text=flash_text, flash_is_win=flash_is_win)
+# ====== 화면 A/B 번갈아 렌더 ======
+mode = int(time.time() // ROTATE_SECONDS) % 2  # 0: roster, 1: score
+
+if mode == 0:
+    render_view_roster(session, participants)
+else:
+    render_view_score(session)
+
+# ====== 팝업이 있으면 위에 덮기 ======
+if time.time() < st.session_state["popup_until"]:
+    render_popup_result(
+        real_name=st.session_state["popup_name"],
+        is_win=st.session_state["popup_is_win"],
+        extra_text="방금 종료된 경기 결과"
+    )
