@@ -1,3 +1,14 @@
+from app.riot import get_account_by_riot_id
+
+st.subheader("Riot 연결 테스트")
+
+try:
+    test = get_account_by_riot_id("Hide on bush", "KR1")
+    st.success("Riot API 정상 연결")
+    st.json(test)
+except Exception as e:
+    st.error(f"Riot API 실패: {e}")
+
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -119,3 +130,4 @@ if now - st.session_state["last_tick_at"] >= TICK_EVERY:
     except Exception as e:
         # ✅ tick 자체가 죽는 경우도 표시
         st.error(f"tick 자체 실패: {e}")
+
