@@ -1,13 +1,4 @@
-from app.riot import get_account_by_riot_id
-
-st.subheader("Riot 연결 테스트")
-
-try:
-    test = get_account_by_riot_id("Hide on bush", "KR1")
-    st.success("Riot API 정상 연결")
-    st.json(test)
-except Exception as e:
-    st.error(f"Riot API 실패: {e}")
+from __future__ import annotations
 
 import time
 import uuid
@@ -18,9 +9,26 @@ from streamlit_autorefresh import st_autorefresh
 
 from app.db import supabase_admin
 from app.logic import tick_session_auto, load_session
+from app.riot import get_account_by_riot_id
 
 st.set_page_config(page_title="Tick Runner", layout="centered")
 
+# ====== Riot 연결 테스트 (맨 위에서 1회 확인) ======
+st.subheader("Riot 연결 테스트")
+try:
+    test = get_account_by_riot_id("Hide on bush", "KR1")
+    st.success("✅ Riot API 정상 연결 (Account API OK)")
+    # 필요하면 아래 주석 해제해서 상세 확인
+    # st.json(test)
+except Exception as e:
+    st.error(f"❌ Riot API 실패: {e}")
+    st.info("이 에러가 403이면 키 문제, 404면 Riot ID(닉/태그) 문제, 429면 호출량 문제입니다.")
+    # 연결 자체가 안 되면 집계는 100% 안 되니까 여기서 중단
+    st.stop()
+
+st.divider()
+
+# ====== 입력 ======
 session_id = st.query_params.get("session", "")
 if not session_id:
     st.error("session 파라미터가 필요합니다. 예: /TickRunner?session=xxxx")
@@ -28,7 +36,7 @@ if not session_id:
 
 # ====== 설정 ======
 TICK_EVERY = 15          # 15초마다 tick_session_auto 호출(라운드로빈)
-LOCK_TTL_SEC = 45        # 락 유효시간(초) - runner 죽어도 자동 해제되게
+LOCK_TTL_SEC = 45        # 락 유효시간(초)
 REFRESH_MS = 2000        # runner 화면 리프레시
 
 # ====== 상태 ======
@@ -94,7 +102,6 @@ except Exception as e:
 if lock_err:
     st.error(f"락 획득 시도 중 에러: {lock_err}")
 
-# 락을 못 잡으면 대기
 if not acquired:
     st.warning("다른 Tick Runner가 집계 중입니다. (이 창은 대기 상태)")
     try:
@@ -117,17 +124,11 @@ except Exception as e:
 remain = int(max(0, TICK_EVERY - (now - st.session_state["last_tick_at"])))
 st.caption(f"다음 tick까지: {remain}초 | TICK_EVERY={TICK_EVERY}s | LOCK_TTL={LOCK_TTL_SEC}s")
 
-# tick 타이밍이면 실행
 if now - st.session_state["last_tick_at"] >= TICK_EVERY:
     st.session_state["last_tick_at"] = now
     try:
         new_count, logs = tick_session_auto(session_id)
         st.success(f"tick 실행 완료: 신규 {new_count}건")
-
-        # ✅ 로그는 무조건 보여주기(비어있어도)
         st.text_area("tick logs (참가자별 실패 원인 포함)", "\n".join(logs) if logs else "(로그 없음)", height=260)
-
     except Exception as e:
-        # ✅ tick 자체가 죽는 경우도 표시
         st.error(f"tick 자체 실패: {e}")
-
