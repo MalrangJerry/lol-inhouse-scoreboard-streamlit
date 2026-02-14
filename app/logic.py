@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import time
 import random
 
+import streamlit as st
 from dateutil import parser as dtparser
 
 from .db import supabase_admin
@@ -111,7 +112,6 @@ def _insert_match_and_update(
         if game_start_ms and int(game_start_ms) < started_ms:
             return False
     except Exception:
-        # started_at 파싱 문제는 드물지만, 여기서 죽지 않게 방어
         pass
 
     puuid = participant["puuid"]
@@ -146,7 +146,6 @@ def _insert_match_and_update(
             ).execute()
         )
     except Exception:
-        # unique 충돌 등 -> 이미 처리된 케이스로 간주
         return False
 
     # 2) 개인 W/L 업데이트 + 3) 팀 승리 업데이트
@@ -182,6 +181,7 @@ def _insert_match_and_update(
 
 def tick_session(session_id: str) -> Tuple[int, List[str]]:
     """
+    (수동 버튼용)
     Riot API를 보고 세션 DB를 최신화.
     - 세션 started_at 이후 경기만
     - 솔랭(420)만
@@ -203,7 +203,6 @@ def tick_session(session_id: str) -> Tuple[int, List[str]]:
             ensure_puuid(p)
             puuid = p["puuid"]
 
-            # 최근 20개만 조회(세션 시작 이후), riot.py에서 queue=420 필터도 넣어둔 상태 권장
             match_ids = get_match_ids_by_puuid(puuid, start_time_sec, count=20)
 
             for match_id in match_ids:
@@ -212,8 +211,68 @@ def tick_session(session_id: str) -> Tuple[int, List[str]]:
 
                 match = get_match(match_id)
 
-                applied = _insert_match_and_update(session, p, match_id, match)
-                if applied:
+                if _insert_match_and_update(session, p, match_id, match):
+                    new_count += 1
+
+        except Exception as e:
+            logs.append(f"{p.get('real_name','(unknown)')} 처리 실패: {e}")
+
+    return new_count, logs
+
+
+def tick_session_auto(session_id: str) -> Tuple[int, List[str]]:
+    """
+    (자동 집계용 - 라운드로빈)
+    - 매 호출마다 전체 참가자를 다 돌지 않고 일부만 처리해서 429를 피함
+    - 1분 이내 반영을 목표로: 10명 기준 (3명씩 / 15초) ≈ 50초 1바퀴
+    """
+    logs: List[str] = []
+    new_count = 0
+
+    session = load_session(session_id)
+    participants = load_participants(session_id)
+
+    started_dt = _iso_to_dt(session["started_at"]).astimezone(timezone.utc)
+    start_time_sec = int(started_dt.timestamp())
+
+    # ✅ 기본값(추천): 3명씩 처리하면 10명 기준 1분 내 1바퀴 가능
+    MAX_PLAYERS_PER_TICK = 3
+    # ✅ 한 사람당 match id는 적게(새 경기만 처리하면 충분)
+    MATCH_ID_COUNT = 6
+
+    n = len(participants)
+    if n == 0:
+        return 0, ["참가자가 없습니다."]
+
+    # ✅ 세션별 라운드로빈 인덱스
+    rr_key = f"rr_idx_{session_id}"
+    if rr_key not in st.session_state:
+        st.session_state[rr_key] = 0
+
+    start_idx = st.session_state[rr_key] % n
+
+    picked: List[Dict[str, Any]] = []
+    idx = start_idx
+    for _ in range(min(MAX_PLAYERS_PER_TICK, n)):
+        picked.append(participants[idx])
+        idx = (idx + 1) % n
+
+    st.session_state[rr_key] = idx
+
+    for p in picked:
+        try:
+            ensure_puuid(p)
+            puuid = p["puuid"]
+
+            match_ids = get_match_ids_by_puuid(puuid, start_time_sec, count=MATCH_ID_COUNT)
+
+            for match_id in match_ids:
+                if _already_processed(session_id, match_id, puuid):
+                    continue
+
+                match = get_match(match_id)
+
+                if _insert_match_and_update(session, p, match_id, match):
                     new_count += 1
 
         except Exception as e:
