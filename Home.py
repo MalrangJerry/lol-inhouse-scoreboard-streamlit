@@ -35,12 +35,17 @@ with st.expander("1) 새 세션 만들기", expanded=True):
             st.error("참가자 수는 짝수여야 합니다.")
         else:
             try:
+                duration_hours = st.number_input("제한시간(시간)", min_value=1, max_value=12, value=3, step=1)
+
                 # 세션 insert
+        now_utc = datetime.now(timezone.utc)
+        ends_utc = now_utc + timedelta(hours=int(duration_hours))
                 s = sb.table("sessions").insert({
                     "name": name,
                     "team_a_name": team_a,
                     "team_b_name": team_b,
                     "started_at": datetime.now(timezone.utc).isoformat(),
+                    "ends_at": ends_utc.isoformat(),
                     "team_a_wins": 0,
                     "team_b_wins": 0,
                 }).execute()
@@ -110,3 +115,4 @@ if session_id:
         st.error(str(e))
 else:
     st.info("세션 ID를 넣으면 관리/집계할 수 있어요.")
+
