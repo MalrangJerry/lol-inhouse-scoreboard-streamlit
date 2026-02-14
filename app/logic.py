@@ -1,4 +1,3 @@
-# app/logic.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
@@ -30,7 +29,6 @@ def _sb_exec(fn, retries: int = 5):
             return fn()
         except Exception as e:
             last = e
-            # 점진적 backoff + 약간 랜덤
             time.sleep(0.35 + i * 0.45 + random.random() * 0.2)
     raise last
 
@@ -86,6 +84,36 @@ def _already_processed(session_id: str, match_id: str, puuid: str) -> bool:
     return bool(r.data)
 
 
+def _session_window_ms(session: Dict[str, Any]) -> Tuple[int, int | None]:
+    """
+    세션 집계 윈도우(ms):
+    - started_at: 필수
+    - ends_at: 선택(없으면 None = 무제한)
+    """
+    started_dt = _iso_to_dt(session["started_at"]).astimezone(timezone.utc)
+    started_ms = int(started_dt.timestamp() * 1000)
+
+    ends_iso = session.get("ends_at")
+    if ends_iso:
+        ends_dt = _iso_to_dt(ends_iso).astimezone(timezone.utc)
+        ends_ms = int(ends_dt.timestamp() * 1000)
+    else:
+        ends_ms = None
+
+    return started_ms, ends_ms
+
+
+def _is_session_over(session: Dict[str, Any]) -> bool:
+    ends_iso = session.get("ends_at")
+    if not ends_iso:
+        return False
+    try:
+        ends_dt = _iso_to_dt(ends_iso).astimezone(timezone.utc)
+        return datetime.now(timezone.utc) >= ends_dt
+    except Exception:
+        return False
+
+
 def _insert_match_and_update(
     session: Dict[str, Any],
     participant: Dict[str, Any],
@@ -104,12 +132,18 @@ def _insert_match_and_update(
     if not game_end:
         return False
 
-    # ✅ 세션 started_at 이전에 시작한 게임은 무조건 제외 (startTime 필터 보완)
+    # ✅ 세션 시간 범위 필터(started_at ~ ends_at)
     try:
-        started_dt = _iso_to_dt(session["started_at"]).astimezone(timezone.utc)
-        started_ms = int(started_dt.timestamp() * 1000)
+        started_ms, ends_ms = _session_window_ms(session)
         game_start_ms = info.get("gameStartTimestamp")
+        game_end_ms = info.get("gameEndTimestamp")
+
+        # started_at 이전 시작한 게임 제외
         if game_start_ms and int(game_start_ms) < started_ms:
+            return False
+
+        # ends_at 이후 끝난 게임 제외 (타임어택 룰)
+        if ends_ms and game_end_ms and int(game_end_ms) > ends_ms:
             return False
     except Exception:
         pass
@@ -163,7 +197,7 @@ def _insert_match_and_update(
         _sb_exec(lambda: sb.table("session_participants").update({"losses": participant["losses"] + 1}).eq("id", participant["id"]).execute())
         participant["losses"] += 1
 
-    # 4) 이벤트 insert (오버레이 팝업용) ✅ kda_text 포함
+    # 4) 이벤트 insert (오버레이 팝업용)
     _sb_exec(
         lambda: sb.table("events").insert(
             {
@@ -182,19 +216,17 @@ def _insert_match_and_update(
 def tick_session(session_id: str) -> Tuple[int, List[str]]:
     """
     (수동 버튼용)
-    Riot API를 보고 세션 DB를 최신화.
-    - 세션 started_at 이후 경기만
-    - 솔랭(420)만
-    - 중복 집계 방지(matches unique)
-    return: (신규 반영된 경기 수, 로그 메시지 리스트)
     """
     logs: List[str] = []
-
     session = load_session(session_id)
+
+    if _is_session_over(session):
+        return 0, ["세션 제한시간이 종료되어 집계를 중단했습니다."]
+
     participants = load_participants(session_id)
 
-    started_dt = _iso_to_dt(session["started_at"]).astimezone(timezone.utc)
-    start_time_sec = int(started_dt.timestamp())
+    started_ms, _ends_ms = _session_window_ms(session)
+    start_time_sec = int(started_ms / 1000)
 
     new_count = 0
 
@@ -223,28 +255,29 @@ def tick_session(session_id: str) -> Tuple[int, List[str]]:
 def tick_session_auto(session_id: str) -> Tuple[int, List[str]]:
     """
     (자동 집계용 - 라운드로빈)
-    - 매 호출마다 전체 참가자를 다 돌지 않고 일부만 처리해서 429를 피함
-    - 1분 이내 반영을 목표로: 10명 기준 (3명씩 / 15초) ≈ 50초 1바퀴
+    - 전체 참가자 중 일부만 처리해서 429를 피함
+    - 세션 ends_at이 지나면 자동 중지
     """
     logs: List[str] = []
     new_count = 0
 
     session = load_session(session_id)
+
+    if _is_session_over(session):
+        return 0, ["세션 제한시간이 종료되어 집계를 중단했습니다."]
+
     participants = load_participants(session_id)
 
-    started_dt = _iso_to_dt(session["started_at"]).astimezone(timezone.utc)
-    start_time_sec = int(started_dt.timestamp())
+    started_ms, _ends_ms = _session_window_ms(session)
+    start_time_sec = int(started_ms / 1000)
 
-    # ✅ 기본값(추천): 3명씩 처리하면 10명 기준 1분 내 1바퀴 가능
-    MAX_PLAYERS_PER_TICK = 3
-    # ✅ 한 사람당 match id는 적게(새 경기만 처리하면 충분)
+    MAX_PLAYERS_PER_TICK = 3   # 10명 기준 1분 내 1바퀴 목표
     MATCH_ID_COUNT = 6
 
     n = len(participants)
     if n == 0:
         return 0, ["참가자가 없습니다."]
 
-    # ✅ 세션별 라운드로빈 인덱스
     rr_key = f"rr_idx_{session_id}"
     if rr_key not in st.session_state:
         st.session_state[rr_key] = 0
