@@ -23,15 +23,19 @@ REFRESH_MS = 2000        # runner 화면 리프레시
 # ====== 상태 ======
 if "runner_id" not in st.session_state:
     st.session_state["runner_id"] = str(uuid.uuid4())
-
 runner_id = st.session_state["runner_id"]
-sb = supabase_admin()
 
-st_autorefresh(interval=REFRESH_MS, key="tick_runner_refresh")
-
-now = time.time()
 if "last_tick_at" not in st.session_state:
     st.session_state["last_tick_at"] = 0.0
+
+sb = supabase_admin()
+st_autorefresh(interval=REFRESH_MS, key="tick_runner_refresh")
+now = time.time()
+
+st.title("Tick Runner (집계 전용)")
+st.caption("이 페이지는 Riot API 집계를 수행합니다. Overlay는 읽기 전용으로 두세요.")
+st.caption(f"Session: {session_id}")
+st.caption(f"Runner ID: {runner_id}")
 
 
 def try_acquire_lock(session_id: str) -> bool:
@@ -42,8 +46,6 @@ def try_acquire_lock(session_id: str) -> bool:
     now_iso = now_dt.isoformat()
     lock_until = (now_dt + timedelta(seconds=LOCK_TTL_SEC)).isoformat()
 
-    # 조건: id == session_id AND (tick_lock_until is null OR tick_lock_until < now)
-    # supabase-py: .or_("a.is.null,a.lt.xxx")
     r = (
         sb.table("sessions")
         .update({"tick_lock_until": lock_until, "tick_lock_owner": runner_id})
@@ -71,37 +73,49 @@ def refresh_lock(session_id: str) -> None:
 
 # ====== 락 획득 시도 ======
 acquired = False
+lock_err = None
 try:
     acquired = try_acquire_lock(session_id)
-except Exception:
+except Exception as e:
+    lock_err = e
     acquired = False
 
-# 락을 못 잡으면 “읽기 전용 상태”로 대기
+if lock_err:
+    st.error(f"락 획득 시도 중 에러: {lock_err}")
+
+# 락을 못 잡으면 대기
 if not acquired:
-    st.info("다른 Tick Runner가 집계 중입니다. (이 창은 대기 상태)")
+    st.warning("다른 Tick Runner가 집계 중입니다. (이 창은 대기 상태)")
     try:
         s = load_session(session_id)
         st.caption(f"세션: {s.get('name','')} | 현재 락 소유자: {s.get('tick_lock_owner')}")
-    except Exception:
-        pass
+        st.caption(f"lock_until: {s.get('tick_lock_until')}")
+    except Exception as e:
+        st.error(f"세션 로드 실패: {e}")
     st.stop()
 
-# ====== 내가 집계 주체면 주기적으로 tick ======
-# 락 연장(heartbeat)
+st.success("✅ 락 획득 성공! 이 Runner가 집계를 수행합니다.")
+
+# ====== 락 연장(heartbeat) ======
 try:
     refresh_lock(session_id)
-except Exception:
-    pass
+except Exception as e:
+    st.error(f"락 연장 실패: {e}")
 
+# ====== tick 실행 ======
+remain = int(max(0, TICK_EVERY - (now - st.session_state["last_tick_at"])))
+st.caption(f"다음 tick까지: {remain}초 | TICK_EVERY={TICK_EVERY}s | LOCK_TTL={LOCK_TTL_SEC}s")
+
+# tick 타이밍이면 실행
 if now - st.session_state["last_tick_at"] >= TICK_EVERY:
     st.session_state["last_tick_at"] = now
     try:
         new_count, logs = tick_session_auto(session_id)
-        st.success(f"tick OK: 신규 {new_count}건")
-        if logs:
-            st.text_area("logs", "\n".join(logs[-10:]), height=160)
-    except Exception as e:
-        st.warning(f"tick 실패: {e}")
+        st.success(f"tick 실행 완료: 신규 {new_count}건")
 
-st.caption(f"Runner ID: {runner_id}")
-st.caption(f"TICK_EVERY={TICK_EVERY}s | LOCK_TTL={LOCK_TTL_SEC}s")
+        # ✅ 로그는 무조건 보여주기(비어있어도)
+        st.text_area("tick logs (참가자별 실패 원인 포함)", "\n".join(logs) if logs else "(로그 없음)", height=260)
+
+    except Exception as e:
+        # ✅ tick 자체가 죽는 경우도 표시
+        st.error(f"tick 자체 실패: {e}")
