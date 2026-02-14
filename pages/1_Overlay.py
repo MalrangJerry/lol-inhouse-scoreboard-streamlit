@@ -38,7 +38,7 @@ now = time.time()
 
 # ====== 리프레시 주기: 팝업 중이면 빠르게, 아니면 느리게 ======
 refresh_ms = 500 if now < st.session_state["popup_until"] else 2000
-st.autorefresh(interval=refresh_ms, key="overlay_refresh")
+st_autorefresh(interval=refresh_ms, key="overlay_refresh")
 
 # ====== (옵션) 자동 Tick ======
 if AUTO_TICK:
@@ -100,4 +100,5 @@ if time.time() < st.session_state["popup_until"]:
         is_win=st.session_state["popup_is_win"],
         extra_text="방금 종료된 경기 결과"
     )
+
 
