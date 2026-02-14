@@ -19,7 +19,7 @@ if not session_id:
 # ====== 설정 ======
 ROTATE_SECONDS = 8       # 화면 A/B 전환 주기
 POPUP_SECONDS = 4.0      # 팝업 유지 시간
-AUTO_TICK = False        # ✅ 처음엔 False 추천 (원인 정리 후 True로)
+AUTO_TICK = True        # ✅ 처음엔 False 추천 (원인 정리 후 True로)
 TICK_EVERY = 30          # tick 호출 주기(초)
 
 # ====== 상태 ======
@@ -100,3 +100,4 @@ if time.time() < st.session_state["popup_until"]:
         kda_text=st.session_state["popup_kda"],
         extra_text="방금 종료된 경기 결과"
     )
+
