@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 from datetime import datetime, timezone
+import time
+import random
 
 from dateutil import parser as dtparser
 
@@ -13,13 +15,28 @@ QUEUE_SOLO_RANKED = 420
 
 
 def _iso_to_dt(iso: str) -> datetime:
-    # Supabase timestamptz -> aware datetime
     return dtparser.isoparse(iso)
+
+
+def _sb_exec(fn, retries: int = 5):
+    """
+    Streamlit Cloud/Supabase에서 가끔 발생하는 ReadError(EAGAIN) 같은 순간 장애 대응.
+    - 짧게 대기하며 재시도
+    """
+    last = None
+    for i in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            # 점진적 backoff + 약간 랜덤
+            time.sleep(0.35 + i * 0.45 + random.random() * 0.2)
+    raise last
 
 
 def load_session(session_id: str) -> Dict[str, Any]:
     sb = supabase_admin()
-    s = sb.table("sessions").select("*").eq("id", session_id).single().execute()
+    s = _sb_exec(lambda: sb.table("sessions").select("*").eq("id", session_id).single().execute())
     if not s.data:
         raise RuntimeError("세션을 찾을 수 없습니다.")
     return s.data
@@ -27,8 +44,8 @@ def load_session(session_id: str) -> Dict[str, Any]:
 
 def load_participants(session_id: str) -> List[Dict[str, Any]]:
     sb = supabase_admin()
-    p = (
-        sb.table("session_participants")
+    p = _sb_exec(
+        lambda: sb.table("session_participants")
         .select("*")
         .eq("session_id", session_id)
         .order("team")
@@ -49,15 +66,15 @@ def ensure_puuid(participant: Dict[str, Any]) -> str:
     puuid = acc["puuid"]
 
     sb = supabase_admin()
-    sb.table("session_participants").update({"puuid": puuid}).eq("id", participant["id"]).execute()
+    _sb_exec(lambda: sb.table("session_participants").update({"puuid": puuid}).eq("id", participant["id"]).execute())
     participant["puuid"] = puuid
     return puuid
 
 
 def _already_processed(session_id: str, match_id: str, puuid: str) -> bool:
     sb = supabase_admin()
-    r = (
-        sb.table("matches")
+    r = _sb_exec(
+        lambda: sb.table("matches")
         .select("id")
         .eq("session_id", session_id)
         .eq("match_id", match_id)
@@ -84,12 +101,21 @@ def _insert_match_and_update(
 
     game_end = info.get("gameEndTimestamp")
     if not game_end:
-        # 게임이 아직 끝나지 않으면 스킵
         return False
+
+    # ✅ 세션 started_at 이전에 시작한 게임은 무조건 제외 (startTime 필터 보완)
+    try:
+        started_dt = _iso_to_dt(session["started_at"]).astimezone(timezone.utc)
+        started_ms = int(started_dt.timestamp() * 1000)
+        game_start_ms = info.get("gameStartTimestamp")
+        if game_start_ms and int(game_start_ms) < started_ms:
+            return False
+    except Exception:
+        # started_at 파싱 문제는 드물지만, 여기서 죽지 않게 방어
+        pass
 
     puuid = participant["puuid"]
 
-    # match-v5 participants에는 kills/deaths/assists, win 등이 들어있음
     me = next((x for x in info.get("participants", []) if x.get("puuid") == puuid), None)
     if not me:
         return False
@@ -107,46 +133,49 @@ def _insert_match_and_update(
 
     # 1) matches insert (unique 제약으로 중복 방지)
     try:
-        sb.table("matches").insert(
-            {
-                "session_id": session["id"],
-                "match_id": match_id,
-                "participant_puuid": puuid,
-                "result": result,
-                "team": team,
-                "game_end_ms": int(game_end),
-            }
-        ).execute()
+        _sb_exec(
+            lambda: sb.table("matches").insert(
+                {
+                    "session_id": session["id"],
+                    "match_id": match_id,
+                    "participant_puuid": puuid,
+                    "result": result,
+                    "team": team,
+                    "game_end_ms": int(game_end),
+                }
+            ).execute()
+        )
     except Exception:
         # unique 충돌 등 -> 이미 처리된 케이스로 간주
         return False
 
-    # 2) 개인 W/L 업데이트
+    # 2) 개인 W/L 업데이트 + 3) 팀 승리 업데이트
     if result == "WIN":
-        sb.table("session_participants").update({"wins": participant["wins"] + 1}).eq("id", participant["id"]).execute()
+        _sb_exec(lambda: sb.table("session_participants").update({"wins": participant["wins"] + 1}).eq("id", participant["id"]).execute())
         participant["wins"] += 1
 
-        # 3) 팀 승리 +1
         if team == "A":
-            sb.table("sessions").update({"team_a_wins": session["team_a_wins"] + 1}).eq("id", session["id"]).execute()
+            _sb_exec(lambda: sb.table("sessions").update({"team_a_wins": session["team_a_wins"] + 1}).eq("id", session["id"]).execute())
             session["team_a_wins"] += 1
         else:
-            sb.table("sessions").update({"team_b_wins": session["team_b_wins"] + 1}).eq("id", session["id"]).execute()
+            _sb_exec(lambda: sb.table("sessions").update({"team_b_wins": session["team_b_wins"] + 1}).eq("id", session["id"]).execute())
             session["team_b_wins"] += 1
     else:
-        sb.table("session_participants").update({"losses": participant["losses"] + 1}).eq("id", participant["id"]).execute()
+        _sb_exec(lambda: sb.table("session_participants").update({"losses": participant["losses"] + 1}).eq("id", participant["id"]).execute())
         participant["losses"] += 1
 
     # 4) 이벤트 insert (오버레이 팝업용) ✅ kda_text 포함
-    sb.table("events").insert(
-        {
-            "session_id": session["id"],
-            "real_name": participant["real_name"],
-            "result": result,
-            "match_id": match_id,
-            "kda_text": kda_text,  # ✅ 추가
-        }
-    ).execute()
+    _sb_exec(
+        lambda: sb.table("events").insert(
+            {
+                "session_id": session["id"],
+                "real_name": participant["real_name"],
+                "result": result,
+                "match_id": match_id,
+                "kda_text": kda_text,
+            }
+        ).execute()
+    )
 
     return True
 
@@ -154,7 +183,7 @@ def _insert_match_and_update(
 def tick_session(session_id: str) -> Tuple[int, List[str]]:
     """
     Riot API를 보고 세션 DB를 최신화.
-    - 세션 started_at 이후의 경기만
+    - 세션 started_at 이후 경기만
     - 솔랭(420)만
     - 중복 집계 방지(matches unique)
     return: (신규 반영된 경기 수, 로그 메시지 리스트)
@@ -174,7 +203,7 @@ def tick_session(session_id: str) -> Tuple[int, List[str]]:
             ensure_puuid(p)
             puuid = p["puuid"]
 
-            # 최근 20개만 조회(세션 시작 이후)
+            # 최근 20개만 조회(세션 시작 이후), riot.py에서 queue=420 필터도 넣어둔 상태 권장
             match_ids = get_match_ids_by_puuid(puuid, start_time_sec, count=20)
 
             for match_id in match_ids:
