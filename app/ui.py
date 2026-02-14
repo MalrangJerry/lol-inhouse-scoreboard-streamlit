@@ -1,5 +1,6 @@
 from __future__ import annotations
 import streamlit as st
+import streamlit.components.v1 as components
 from typing import List, Dict, Any
 
 BASE_CSS = """
@@ -87,26 +88,26 @@ def _split_teams(participants: List[Dict[str, Any]]):
     return a, b
 
 def render_view_roster(session, participants):
-    st.markdown(BASE_CSS, unsafe_allow_html=True)
     a, b = _split_teams(participants)
 
     def team_block(team_name, plist):
         lines = ""
         for p in plist:
             lines += f"""
-            <div class="p">
-              <span>{p['real_name']}</span>
-              <span>{p['wins']}승 {p['losses']}패</span>
-            </div>
+              <div class="p">
+                <span>{p['real_name']}</span>
+                <span>{p['wins']}승 {p['losses']}패</span>
+              </div>
             """
         return f"""
-        <div class="teamBox">
-          <div class="teamName">{team_name}</div>
-          {lines}
-        </div>
+          <div class="teamBox">
+            <div class="teamName">{team_name}</div>
+            {lines}
+          </div>
         """
 
     html = f"""
+    {BASE_CSS}
     <div class="wrap">
       <div class="card">
         <div class="row">
@@ -124,13 +125,13 @@ def render_view_roster(session, participants):
       </div>
     </div>
     """
-    # ✅ 반드시 markdown + unsafe_allow_html
-    st.markdown(html, unsafe_allow_html=True)
+    components.html(html, height=240, width=370)
 
 
-def render_view_score(session: Dict[str, Any]):
-    st.markdown(BASE_CSS, unsafe_allow_html=True)
+
+def render_view_score(session):
     html = f"""
+    {BASE_CSS}
     <div class="wrap">
       <div class="card">
         <div class="row">
@@ -146,7 +147,7 @@ def render_view_score(session: Dict[str, Any]):
       </div>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    components.html(html, height=240, width=370)
 
 def render_popup_result(real_name: str, is_win: bool, extra_text: str = "방금 종료된 경기 결과"):
     cls = "win" if is_win else "loss"
@@ -161,4 +162,5 @@ def render_popup_result(real_name: str, is_win: bool, extra_text: str = "방금 
         """,
         unsafe_allow_html=True
     )
+
 
