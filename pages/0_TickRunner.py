@@ -1,0 +1,107 @@
+import time
+import uuid
+from datetime import datetime, timezone, timedelta
+
+import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+
+from app.db import supabase_admin
+from app.logic import tick_session_auto, load_session
+
+st.set_page_config(page_title="Tick Runner", layout="centered")
+
+session_id = st.query_params.get("session", "")
+if not session_id:
+    st.error("session 파라미터가 필요합니다. 예: /TickRunner?session=xxxx")
+    st.stop()
+
+# ====== 설정 ======
+TICK_EVERY = 15          # 15초마다 tick_session_auto 호출(라운드로빈)
+LOCK_TTL_SEC = 45        # 락 유효시간(초) - runner 죽어도 자동 해제되게
+REFRESH_MS = 2000        # runner 화면 리프레시
+
+# ====== 상태 ======
+if "runner_id" not in st.session_state:
+    st.session_state["runner_id"] = str(uuid.uuid4())
+
+runner_id = st.session_state["runner_id"]
+sb = supabase_admin()
+
+st_autorefresh(interval=REFRESH_MS, key="tick_runner_refresh")
+
+now = time.time()
+if "last_tick_at" not in st.session_state:
+    st.session_state["last_tick_at"] = 0.0
+
+
+def try_acquire_lock(session_id: str) -> bool:
+    """
+    sessions.tick_lock_until이 비었거나 만료된 경우에만 락 획득.
+    """
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    lock_until = (now_dt + timedelta(seconds=LOCK_TTL_SEC)).isoformat()
+
+    # 조건: id == session_id AND (tick_lock_until is null OR tick_lock_until < now)
+    # supabase-py: .or_("a.is.null,a.lt.xxx")
+    r = (
+        sb.table("sessions")
+        .update({"tick_lock_until": lock_until, "tick_lock_owner": runner_id})
+        .eq("id", session_id)
+        .or_(f"tick_lock_until.is.null,tick_lock_until.lt.{now_iso}")
+        .execute()
+    )
+    return bool(r.data)
+
+
+def refresh_lock(session_id: str) -> None:
+    """
+    내가 락 소유자일 때만 TTL 연장(heartbeat)
+    """
+    now_dt = datetime.now(timezone.utc)
+    lock_until = (now_dt + timedelta(seconds=LOCK_TTL_SEC)).isoformat()
+    (
+        sb.table("sessions")
+        .update({"tick_lock_until": lock_until})
+        .eq("id", session_id)
+        .eq("tick_lock_owner", runner_id)
+        .execute()
+    )
+
+
+# ====== 락 획득 시도 ======
+acquired = False
+try:
+    acquired = try_acquire_lock(session_id)
+except Exception:
+    acquired = False
+
+# 락을 못 잡으면 “읽기 전용 상태”로 대기
+if not acquired:
+    st.info("다른 Tick Runner가 집계 중입니다. (이 창은 대기 상태)")
+    try:
+        s = load_session(session_id)
+        st.caption(f"세션: {s.get('name','')} | 현재 락 소유자: {s.get('tick_lock_owner')}")
+    except Exception:
+        pass
+    st.stop()
+
+# ====== 내가 집계 주체면 주기적으로 tick ======
+# 락 연장(heartbeat)
+try:
+    refresh_lock(session_id)
+except Exception:
+    pass
+
+if now - st.session_state["last_tick_at"] >= TICK_EVERY:
+    st.session_state["last_tick_at"] = now
+    try:
+        new_count, logs = tick_session_auto(session_id)
+        st.success(f"tick OK: 신규 {new_count}건")
+        if logs:
+            st.text_area("logs", "\n".join(logs[-10:]), height=160)
+    except Exception as e:
+        st.warning(f"tick 실패: {e}")
+
+st.caption(f"Runner ID: {runner_id}")
+st.caption(f"TICK_EVERY={TICK_EVERY}s | LOCK_TTL={LOCK_TTL_SEC}s")
