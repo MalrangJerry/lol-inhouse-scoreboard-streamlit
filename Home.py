@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import streamlit as st
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.db import supabase_admin
 from app.parse import parse_line
@@ -19,6 +19,8 @@ with st.expander("1) 새 세션 만들기", expanded=True):
     team_a = col1.text_input("팀 A 이름", value="TEAM A")
     team_b = col2.text_input("팀 B 이름", value="TEAM B")
 
+    duration_hours = st.number_input("제한시간(시간)", min_value=1, max_value=12, value=3, step=1)
+
     st.caption("참가자 입력: 각 줄에 `본명,게임닉#태그` (인원수는 짝수면 OK)")
     st.caption("예: 홍길동,Hide on bush#KR1")
     raw = st.text_area("참가자 리스트", height=220, value="")
@@ -35,16 +37,15 @@ with st.expander("1) 새 세션 만들기", expanded=True):
             st.error("참가자 수는 짝수여야 합니다.")
         else:
             try:
-                duration_hours = st.number_input("제한시간(시간)", min_value=1, max_value=12, value=3, step=1)
+                now_utc = datetime.now(timezone.utc)
+                ends_utc = now_utc + timedelta(hours=int(duration_hours))
 
                 # 세션 insert
-        now_utc = datetime.now(timezone.utc)
-        ends_utc = now_utc + timedelta(hours=int(duration_hours))
                 s = sb.table("sessions").insert({
                     "name": name,
                     "team_a_name": team_a,
                     "team_b_name": team_b,
-                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "started_at": now_utc.isoformat(),
                     "ends_at": ends_utc.isoformat(),
                     "team_a_wins": 0,
                     "team_b_wins": 0,
@@ -66,10 +67,10 @@ with st.expander("1) 새 세션 만들기", expanded=True):
                     }).execute()
 
             except Exception as e:
+                st.error("세션 생성 중 오류:")
                 st.exception(e)
                 st.stop()
 
-            # ✅ 들여쓰기 정상 (추가 indent 없음)
             st.success(f"세션 생성 완료: {session_id_new}")
             st.info("오버레이 페이지는 왼쪽 Pages → Overlay 또는 아래 링크 사용")
             st.code(f"/Overlay?session={session_id_new}")
@@ -87,14 +88,6 @@ if session_id:
         st.write(f"세션: **{session['name']}**")
         st.write(f"팀명: {session['team_a_name']} vs {session['team_b_name']}")
         st.write(f"점수: **{session['team_a_wins']} : {session['team_b_wins']}**")
-
-        c1, c2 = st.columns(2)
-        if c1.button("팀 이름 변경"):
-            new_a = c1.text_input("새 팀 A 이름", value=session["team_a_name"], key="newa")
-            new_b = c2.text_input("새 팀 B 이름", value=session["team_b_name"], key="newb")
-            if st.button("저장"):
-                sb.table("sessions").update({"team_a_name": new_a, "team_b_name": new_b}).eq("id", session_id).execute()
-                st.success("저장 완료. 새로고침하세요.")
 
         if st.button("지금 집계(Tick) 실행"):
             try:
@@ -115,4 +108,3 @@ if session_id:
         st.error(str(e))
 else:
     st.info("세션 ID를 넣으면 관리/집계할 수 있어요.")
-
