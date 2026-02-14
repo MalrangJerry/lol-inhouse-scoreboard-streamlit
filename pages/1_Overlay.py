@@ -20,6 +20,14 @@ if not session_id:
 ROTATE_SECONDS = 8       # 화면 A/B 전환 주기
 POPUP_SECONDS = 4.0      # 팝업 유지 시간
 
+def _fmt_remain(seconds: int) -> str:
+    if seconds < 0:
+        seconds = 0
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
 # ====== 상태 ======
 if "last_event_at" not in st.session_state:
     st.session_state["last_event_at"] = datetime.now(timezone.utc)
@@ -47,6 +55,19 @@ try:
     participants = load_participants(session_id)
 except Exception:
     st.stop()
+
+# ====== ✅ 제한시간 타이머 표시 (ends_at 기준) ======
+# ui.py로 나중에 옮겨도 되고, 일단 Overlay 상단에 최소 표시만
+try:
+    ends_at = session.get("ends_at")
+    if ends_at:
+        ends_dt = dtparser.isoparse(ends_at).astimezone(timezone.utc)
+        remain_sec = int((ends_dt - datetime.now(timezone.utc)).total_seconds())
+        st.markdown(f"### ⏱️ 남은 시간: **{_fmt_remain(remain_sec)}**")
+        if remain_sec <= 0:
+            st.warning("타임어택 종료! (이후 종료된 경기는 집계되지 않습니다)")
+except Exception:
+    pass
 
 # ====== 최신 이벤트 1개 확인 → 새 이벤트면 팝업 ======
 try:
