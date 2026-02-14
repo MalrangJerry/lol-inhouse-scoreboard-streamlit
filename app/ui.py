@@ -86,11 +86,11 @@ def _split_teams(participants: List[Dict[str, Any]]):
     b = [p for p in participants if p["team"] == "B"]
     return a, b
 
-def render_view_roster(session: Dict[str, Any], participants: List[Dict[str, Any]]):
+def render_view_roster(session, participants):
     st.markdown(BASE_CSS, unsafe_allow_html=True)
     a, b = _split_teams(participants)
 
-    def team_block(team_name: str, plist: List[Dict[str, Any]]):
+    def team_block(team_name, plist):
         lines = ""
         for p in plist:
             lines += f"""
@@ -124,7 +124,9 @@ def render_view_roster(session: Dict[str, Any], participants: List[Dict[str, Any
       </div>
     </div>
     """
+    # ✅ 반드시 markdown + unsafe_allow_html
     st.markdown(html, unsafe_allow_html=True)
+
 
 def render_view_score(session: Dict[str, Any]):
     st.markdown(BASE_CSS, unsafe_allow_html=True)
@@ -159,3 +161,4 @@ def render_popup_result(real_name: str, is_win: bool, extra_text: str = "방금 
         """,
         unsafe_allow_html=True
     )
+
